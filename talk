@@ -1,0 +1,485 @@
+#!/usr/bin/python3
+
+import sys
+try:
+    from cryptography.fernet import Fernet
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    from cryptography.hazmat.backends import default_backend
+    from cryptography.fernet import InvalidToken
+except ModuleNotFoundError as module_error:
+    print(f"crytography module has to be installed to run this program")
+    sys.exit(0)
+try:
+    import numpy as np
+    #np.set_printoptions(threshold=sys.maxsize)
+except ModuleNotFoundError as module_error:
+    print(f"numpy module has to be installed to run this program")
+    sys.exit(0)
+
+try:
+    import sounddevice as sd
+except ModuleNotFoundError as module_error:
+    print(f"sounddevice module has to be installed to run this program")
+    sys.exit(0)
+
+try:
+    import tqdm
+except ModuleNotFoundError as module_error:
+    print(f"tqdm module has be to be installed to run this program")
+    sys.exit(0)
+import base64
+import socket
+import threading
+import getpass
+import getopt
+import time
+import re
+import os
+
+def record_audio(duration):
+    print(np.empty([2,2]))
+    duration = duration
+    fs = 44100
+    recording = sd.rec(int(duration * fs), samplerate = fs,channels=2,dtype='float64')
+    sd.wait()
+    sd.play(recording,fs)
+    time.sleep(10)
+    return recording 
+
+#record_audio(10)
+#sys.exit(0)
+
+class Encryption_decryption:
+    def __init__(self):
+        self.key = self.encryption_key()
+        self.fernet = Fernet(self.key)
+
+    def password_check(self,password):                                                                               
+
+        special_chars = re.compile('[`~!@#$%^&*()\[\]_{}<>?/\|]')
+        upper_case = re.compile('[A-Z]')
+        lower_case = re.compile('[a-z]')
+        numbers = re.compile('[0-9]')
+        if len(password) < 8 or len(password) >32:
+            print(f"password should be between 8 and 32 characters")                                            
+            sys.exit(0)                                                                                                 
+        if not special_chars.search(password) == None and \
+                not upper_case.search(password) == None and \
+                not  lower_case.search(password) == None:
+            return password
+        else:
+            print(f"password should be alphanumeric")
+            sys.exit(0)
+
+    def encryption_key(self):
+        password = getpass.getpass(prompt="Enter your Encryption key: ") 
+        password = self.password_check(password)
+        password = password.encode()
+        key_derivative_function = PBKDF2HMAC(algorithm = hashes.SHA256(),\
+                length = 32,\
+                salt = password,\
+                iterations = 1995,\
+                backend = default_backend())
+        key = base64.urlsafe_b64encode(key_derivative_function.derive(password))
+        return key
+
+    def encrypt_message(self,message):
+        #print(f"function-encrypt_message: {type(message)}")
+        message = str(message).encode()
+        encrypted_message = self.fernet.encrypt(message)
+        return encrypted_message , str(len(encrypted_message))
+
+    def decrypt_message(self,message):
+        decrypted_message = self.fernet.decrypt(message)
+        return decrypted_message
+    
+class Connection(Encryption_decryption):
+    def __init__(self):
+        #self.host = socket.gethostbyname(socket.gethostname()); print(self.host)
+        self.host = ""
+        self.port=9508
+        self.myself = socket.gethostname()
+        self.addres=""
+        self.server = False
+        self.send_close = False
+        self.receive_close = False
+        self.connections = []
+        self.buffer = 100
+        try:
+            options, arguments = getopt.getopt(sys.argv[1:],"lh:p:",["help","listen","host=","port="])
+        except getopt.GetoptError as gErr:
+            print(gErr)
+            self.usage()
+            sys.exit(1)
+        else:
+            for o,a in options:
+                if o == "--help":
+                    self.usage()
+                    sys.exit(0)
+                elif o in ("-l","--listen"):
+                    self.server = True
+                elif o in ("-h","--host"):
+                    self.host = a;print(self.host)
+                elif o in ("-p","--port") :
+                    try:
+                        self.port = int(a)
+                    except ValueError as vE:
+                        print(f"{a} should be interger")
+                        sys.exit(0)
+                else:
+                    assert False, "Unhandled option is provided"
+        #self.host = '192.168.1.10'
+        #self.port = 1995
+        self.TERMINATE = [1]
+        if self.server:
+            self.server_socket()
+        else:
+            self.client_socket()
+        super().__init__()
+        self.start_threads()
+        #print(self.fernet)
+
+    def usage(self):
+        print(f"To Become Server:")
+        print("chat -l HOST-IP PORT ")
+        print(f"To Become client:")
+        print("chat HOST-IP PORT ")
+
+    def server_socket(self):
+        try:
+            self.serversocket = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+            previous_state = self.serversocket.getsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR)
+            #print(f"previous state is: {previous_state}")
+            self.serversocket.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+            current_state = self.serversocket.getsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR)
+            #print(f"current state is: {current_state}")
+            self.serversocket.bind((self.host,self.port))
+        except OSError as oSE:
+            print("Port is in use, wait for few seconds")
+            sys.exit(0)
+        else:
+            self.serversocket.listen()
+            print("Listening for connections")
+            self.clientsocket,self.address = self.serversocket.accept()
+            connection_string = str(self.address[0]) + ':'+ str(self.address[1])
+            self.connections.append(connection_string)
+            print(f"number of connections are {len(self.connections)}")
+            print(f"Connection is sucess from {str(self.address)}")
+
+    def client_socket(self):
+        self.clientsocket=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+        try:
+            self.clientsocket.connect((self.host,self.port))
+            print(f"Trying to connect to {self.host}")
+        except (ConnectionError,OSError):
+            print(f"{self.host} is down")
+            sys.exit(0)
+        else:
+            print("Connection is successful")
+
+    def close_connection(self):
+        try:
+            self.receive_client_message.join()
+            self.send_message.join()
+            print("Exit executing")
+            sys.exit(0)
+            print("exited")
+            print("closed thread in the close connection method")
+            #self.receive_client_message._stop() 
+            #time.sleep(2)
+            if self.receive_client_message.is_alive():
+                print("Still alive")
+                self.receive_client_message.should_abort_immediately = True
+                #time.sleep(2)
+
+            if self.send_message.is_alive():
+                self.send_message.should_abort_immediately = True
+        except Exception as e:
+            print(f"{e}")
+        else:
+            if self.server:
+                self.serversocket.close()
+                self.clientsocket.close()
+            else:
+                self.clientsocket.close()
+        finally:
+            print("Getting exited")
+            #while self.receive_client_message.is_alive():
+                #print("RCM is getting closed")
+            print(f"{self.receive_client_message.is_alive()} RCM")
+            sys.exit(0)
+
+
+    def receive_messages(self,TERMINATE):
+        #print(type(TERMINATE),f"{TERMINATE}")
+        c_message = ""
+        message_count = 0
+        buffer = 100 
+        while TERMINATE:
+            #print("Listening for input messages...")
+            try:
+                c_message = self.clientsocket.recv(buffer) #.decode('ascii')
+                #print(f"c_message: {c_message} for buffer")
+                if '--' in c_message.decode():
+                    print(f"yes file block have some problem")
+                try:
+                   # print("going inside try in receive_messages block")
+                    if '-' in c_message.decode():
+                        buffer = int(c_message.decode().split('-')[1])
+                    elif '**' in c_message.decode():
+                        #print(f"I entered file block {c_message}")
+                        buffer = 100 
+                        #c_message,buffer = self.clientsocket.recv(buffer).decode().split('**')
+                        c_message,buffer = c_message.decode().split('**')
+                        print(c_message,buffer)
+                        print(type(c_message),type(buffer))
+                        #print(f"buffer for the next message is {c_message}")
+                        #print(f"type of buffer is {type(buffer)} :L219")
+                        #file_size_and_buffer = c_message.split('-')
+                        #full_file_size = int(c_message[0]) 
+                        #buffer = int(c_message[1]) 
+                        buffer = int(buffer) 
+                        new_file = "Untitiled.txt"
+                        #print("Inside the file block in RM")
+                        #print(f"file_size_and_buffer {full_file_size} {buffer}")
+                        #file_status = tqdm.tqdm(range(full_file_size),\
+                            #f"downloading {new_file}",\
+                            #unit_divisor=buffer)
+                        with open(new_file,'w') as nf:
+                            file_data = []
+                            while True:
+                                print(f"file: {new_file} is getting downloaded")
+                                #print(f"type of c_message: {type(c_message)}")
+                                #print(f"c_message: {c_message}")
+                                c_message = self.clientsocket.recv(buffer).decode()
+                                #file_status.update(len(c_message))
+                                #print(f"c_message is {c_message} with buffer {buffer}")
+                                if not c_message == "File-sent":
+                                    file_data.append(c_message)
+                                    continue
+                                #file_data.append(c_message)
+                                #print(f"file copied with name {new_file}")
+                                #print(f"c_message is {c_message}")
+                                #print(f"file data is {file_data}")
+                                for data in file_data:
+                                    nf.write(data)
+                                break
+                            #file_status.close()
+                            #print(file_data)
+                        continue
+
+                    elif isinstance(int(c_message.decode()),int):
+                        #print(f"buffer at start {buffer}")
+                        buffer = int(c_message.decode())
+                        #print(f"new buffer is {buffer}")
+                    c_message = self.clientsocket.recv(buffer) #.decode('ascii')
+                except ValueError as ve:
+                    #print("I am the breaker siddhu L:238")
+                    if TERMINATE:TERMINATE.pop()
+                    break
+                #print("came outside try in receive_messages block")
+            except ConnectionResetError as cRE:
+                print("Connection reset by host")
+            try:
+                c_message = self.decrypt_message(c_message).decode().lstrip()
+                #print(f"c_message: {c_message} got decrypted")
+            except InvalidToken as iT:
+                if message_count == 0:
+                    print("Your Key is invalid")
+                else:
+                    print(f"\rKey is expired")
+                #print("Closing connection from the recevie_message method")
+                #print("I am breaking the recv thread line 252")
+                if not TERMINATE:break
+                TERMINATE.pop()
+                break
+                
+            else:
+                message_count += 1
+
+            if c_message == "q":
+                if not TERMINATE:break
+                TERMINATE.pop()
+                if self.server:
+                    print(f"\r {self.address[0] : >30}: Thanks for your time")
+                else:
+                    print(f"\r {self.host : >30}: Thanks for your time")
+                #self.clientsocket.shutdown()
+                break
+            elif not c_message == "" :
+                #print("I am getting hit please rescue me")
+                if self.server:
+                    print(f"\r{self.address[0] : >30}: {c_message}")
+                else:
+                    print(f"\r{self.host : >30}: {c_message}")
+
+
+    def message_chopper(self,message):
+        encrypted_message_list=[]
+        buffer=4096
+        for _ in range(0,len(message),buffer):
+            encrypted_message_list.append(message[_:_+buffer])
+        print(f"message_chopper did chopping")
+
+        return encrypted_message_list
+
+    def send_message(self,TERMINATE):
+        #print(type(TERMINATE),f"{TERMINATE}")
+        message_chop = False
+        while TERMINATE :
+            message = input(f"{self.myself}: ")
+            if message == "":
+                continue
+                #print(f"length of message: {len(message)}")
+            elif message == "record":
+                duration = input("How many seconds you want to record: ")
+                message = self.record_audio(int(duration))
+                message_chop = True
+                #print(f"{type(message)}")
+            elif message == "file":
+                file_name = input("Enter file name: ")
+                if os.path.isfile(file_name):
+                    #self.clientsocket.sendall(message.encode())
+                    #time.sleep(0.001)
+                    full_file_size = os.stat(file_name).st_size 
+                    file_size = full_file_size if full_file_size < 4094 else 4094
+                    #file_status = tqdm.tqdm(range(full_file_size),\
+                            #f"Sending {file_name}",\
+                            #unit_divisor=file_size)
+                    #file_size_and_buffer = str(full_file_size)+"-"+str(file_size)
+                    #self.clientsocket.sendall(f"{file_size_and_buffer}".encode())
+                    message = f"{message}**{file_size}"
+                    self.clientsocket.sendall(message.encode())
+                    time.sleep(0.001)
+                    with open(file_name,'r')as _file:
+                        #print(f"file: {file_name} is getting sent with buffer {file_size}")
+                        content = _file.read(file_size)
+                        #content = self.encrypt_message(content)
+                        #print(f"file_chunk type is {type(content)}")
+                        #print(f"file_chunk is {content[0]}")
+                        #content_exists = True
+                        #while content_exists:
+                        #print(f"content is {content}")
+                        while True:
+                        #file_status.update(len(content))
+                        #file_status.close()
+                            time.sleep(0.001)
+                            self.clientsocket.sendall(content.encode())
+                            #file_status.update(len(content))
+                            content = _file.read(file_size)
+                            #content = self.encrypt_message(content)
+                            #print(f"content is {len(content)}")
+                            if content == "":
+                                #print("File read completely")
+                                #self.clientsocket.sendall(content[0])
+                                #content_exists = False
+                                break
+                    message = "File-sent"
+                    time.sleep(0.001)
+                    self.clientsocket.sendall(message.encode())
+                    print(f"file: {file_name} is sent")
+                else:
+                    print(f"{file_name} does not exist")
+                continue
+            message ,enc_message_length = self.encrypt_message(message)
+            #print(f"ecrypted_message : {message}")
+            #print(f"message is encrypted")
+            if message_chop:
+                print("sending message to get chopped")
+                encrypted_message_list = self.message_chopper(message)
+                print("message got chopped")
+                bytes_sent=0
+                for encrypted_message in encrypted_message_list:
+                    #print(f"sending message length : {len(encrypted_message)}")
+                    #print(f"length of the message with encode:  {str(len(encrypted_message_list[0])).encode()}")
+                    #self.clientsocket.send(str(len(encrypted_message_list[0])).encode())
+                    chopped_step = "4097"
+                    bytes_sent += 4096
+                    enc_len_chopped_len=f"{enc_message_length}-{chopped_step}"
+                    print(f"enc_len_chopped_len: {enc_len_chopped_len} {bytes_sent}")
+                    #self.clientsocket.send(str(4097).encode())
+                    self.clientsocket.send(enc_len_chopped_len.encode())
+                    #print(f"sending {encrypted_message_list[0:50]} from chop_block")
+                    time.sleep(0.2)
+                    try:
+                        self.clientsocket.sendall(encrypted_message)
+                    except ConnectionResetError as c_r_e:
+                        print("audio send failed!!!")
+                        break
+                message_chop=False
+                #print("I am continuing")
+                continue
+                print("recorded audio sent successfully")
+            
+            enc_message_length = str(len(message))
+            #print(f"length of enc-message: {len(message)}")
+            try:
+                #print(f"I have sent the message length :{enc_message_length}")
+                self.clientsocket.send(enc_message_length.encode())
+                time.sleep(0.1)
+                #print(f"I have sent the message :{message}")
+                self.clientsocket.send(message)
+            except (BrokenPipeError,ConnectionResetError,OSError) :
+                if self.server:
+                    print(f"{self.address[0]} is down")
+                else:
+                    print(f"{self.host} is down")
+                #self.close_connection()
+                if not TERMINATE:
+                    break
+                TERMINATE.pop()
+                break
+            message = self.decrypt_message(message)
+            if message.decode() == "q" :
+                if not TERMINATE:
+                    break
+                TERMINATE.pop()
+                break
+            #elif message.decode() == "record":
+                #pass
+
+    def play_audio(self,recording):
+        fs = 44100
+        print("I got hit? play audio")
+        sd.play(recording,fs)
+        time.sleep(10)
+
+    def record_audio(self,duration):
+        duration = duration
+        fs = 44100
+        recording = sd.rec(int(duration * fs), samplerate = fs,channels=2,dtype='float64',blocking=True)
+        #sd.wait()
+        #sd.play(recording,fs)
+        #time.sleep(10)
+        return recording 
+
+        
+
+    def start_threads(self):
+        self.receive_client_message=threading.Thread(target=self.receive_messages,args=[self.TERMINATE])
+        self.send_message = threading.Thread(target=self.send_message,args=[self.TERMINATE])
+        self.receive_client_message.start()
+        self.send_message.start()
+        #print(f"{self.receive_client_message.is_alive()} RCM")
+        #print(f"{self.send_message.is_alive()} SM")
+        self.receive_client_message.join()
+        self.send_message.join()
+        #print(f"RCM state: {self.receive_client_message.is_alive()}")
+        #print(f"SM state: {self.send_message.is_alive()}")
+        if self.server:
+            self.serversocket.close()
+            #self.clientsocket.close()
+        else:
+            self.clientsocket.close()
+        #print(f"{threading.currentThread().getName()}")
+        #print(f"{self.receive_client_message.is_alive()} RCM")
+        #print(f"{self.send_message.is_alive()} SM")
+        sys.exit(0)
+        
+socket = Connection()
+try:
+    socket
+except Exception as e:
+    print(str(e))
+    sys.exit(0)
